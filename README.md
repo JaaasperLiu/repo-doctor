@@ -4,15 +4,52 @@
 
 Repo Doctor scans your Git repository, scores it against 17 open-source best-practice rules, and auto-generates any missing files — README, LICENSE, CI workflow, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY policy, and .gitignore — without ever touching your source code.
 
+## Demo
+
+```
+$ repo-doctor scan my-project/
+
+╭──────────────────────────── Repo Doctor ─────────────────────────────╮
+│ Score: 21/100  Grade: D                                              │
+│ Stack: node  |  Passed: 5  |  Failed: 12  |  Total: 17              │
+╰──────────────────────────────────────────────────────────────────────╯
+  ERR  CI pipeline exists              FAIL  No CI/CD pipeline found. (auto-fixable)
+  ERR  LICENSE present                 FAIL  No LICENSE file found. (auto-fixable)
+  ERR  README present                  FAIL  No README file found. (auto-fixable)
+  ERR  .gitignore present              FAIL  No .gitignore file found. (auto-fixable)
+  ...
+
+$ repo-doctor fix --yes my-project/
+
+  Applied 7 change(s).
+  Score improved by 67 points!
+
+╭──────────────────────────── Repo Doctor ─────────────────────────────╮
+│ Score: 88/100  Grade: B                                              │
+│ Stack: node  |  Passed: 14  |  Failed: 3  |  Total: 17              │
+╰──────────────────────────────────────────────────────────────────────╯
+```
+
 ## Install
 
 ```bash
-# With pipx (recommended)
-pipx install git+https://github.com/JasperLiu1999/repo-doctor.git
+# From PyPI (recommended)
+pipx install repo-doctor
 
 # Or with uv
+uv tool install repo-doctor
+```
+
+<details>
+<summary>Development install (from source)</summary>
+
+```bash
+pipx install git+https://github.com/JasperLiu1999/repo-doctor.git
+# or
 uv tool install git+https://github.com/JasperLiu1999/repo-doctor.git
 ```
+
+</details>
 
 ## Quickstart
 
@@ -25,25 +62,9 @@ repo-doctor fix --dry-run /path/to/repo
 
 # Fix issues automatically
 repo-doctor fix --yes /path/to/repo
-```
 
-### Example: scanning a bare repo
-
-```
-╭──────────────────── Repo Doctor ─────────────────────╮
-│ Score: 21/100  Grade: D                              │
-│ Stack: node  |  Passed: 5  |  Failed: 12  |  Total: 17 │
-╰──────────────────────────────────────────────────────╯
-```
-
-### Example: after running `fix --yes`
-
-```
-╭──────────────────── Repo Doctor ─────────────────────╮
-│ Score: 88/100  Grade: B                              │
-│ Stack: node  |  Passed: 14  |  Failed: 3  |  Total: 17 │
-╰──────────────────────────────────────────────────────╯
-Score improved by 67 points!
+# Generate a config file
+repo-doctor init
 ```
 
 ## What it checks
@@ -60,6 +81,35 @@ Score improved by 67 points!
 | **Reproducibility** | Lockfile present, dependencies pinned | 0 of 2 |
 
 Each rule produces a **pass/fail**, a **severity** (error/warn/info), and a **weight** toward the 0-100 score. Grade thresholds: A (90+), B (75+), C (55+), D (<55).
+
+### Rule reference
+
+| Rule ID | Description | Severity | Weight | Auto-fix |
+|---------|-------------|----------|--------|:--------:|
+| `readme_exists` | README file present | error | 15 | Yes |
+| `readme_sections` | README has Install + Usage sections | warn | 5 | — |
+| `license_exists` | LICENSE file present | error | 12 | Yes |
+| `contributing_exists` | CONTRIBUTING guide present | warn | 6 | Yes |
+| `code_of_conduct_exists` | CODE_OF_CONDUCT present | warn | 5 | Yes |
+| `security_policy` | SECURITY policy present | warn | 5 | Yes |
+| `ci_workflow` | CI/CD pipeline exists | error | 10 | Yes |
+| `test_command` | Test command discoverable | warn | 5 | — |
+| `lint_config` | Linter configured | info | 3 | — |
+| `gitignore_exists` | .gitignore present | error | 8 | Yes |
+| `gitignore_coverage` | .gitignore covers common junk | warn | 4 | Yes |
+| `no_venv_committed` | No venv/node_modules committed | error | 5 | — |
+| `repo_size` | Reasonable repo size (<100 MB) | info | 3 | — |
+| `no_secrets` | No .env/.pem/id_rsa files committed | error | 8 | — |
+| `no_high_entropy` | No high-entropy strings (potential secrets) | info | 3 | — |
+| `lockfile_exists` | Lockfile present for detected stack | warn | 5 | — |
+| `pinned_deps` | Dependencies have version constraints | info | 3 | — |
+
+Use `--only` and `--skip` with these IDs:
+
+```bash
+repo-doctor scan --only readme_exists --only license_exists
+repo-doctor scan --skip lint_config --skip pinned_deps
+```
 
 ## How fixes work
 
@@ -108,28 +158,70 @@ repo-doctor init [PATH]     Create a .repo-doctor.yml config
 | `--only RULE` | Only run specific rule(s) |
 | `--skip RULE` | Skip specific rule(s) |
 | `--license` | License type: `mit` (default) or `apache-2.0` |
+| `--output-dir`, `-o` | Output directory for reports (default: repo root) |
 
 ## Output files
 
 After scanning, Repo Doctor writes:
 
 - `repo-doctor.report.md` — Human-readable report
-- `repo-doctor.report.json` — Machine-readable report (for CI integration)
+- `repo-doctor.report.json` — Machine-readable report (for CI)
 - `repo-doctor.changes.md` — Summary of applied/planned changes
+
+Use `--output-dir` to keep your repo clean:
+
+```bash
+repo-doctor scan --output-dir .repo-doctor
+```
 
 ## Config
 
-Create `.repo-doctor.yml` in your repo root, or run `repo-doctor init`:
+If `.repo-doctor.yml` exists in your repo root, Repo Doctor loads it automatically. CLI flags override config values.
+
+Create one with `repo-doctor init`, or write it manually:
 
 ```yaml
 project_name: my-project
 license: mit
 ci: github-actions
 readme: standard
+output_dir: .repo-doctor
 skip:
   - lint_config
   - pinned_deps
 ```
+
+## Use in CI (GitHub Action)
+
+Add Repo Doctor to your GitHub Actions workflow:
+
+```yaml
+- name: Repo Doctor
+  uses: JasperLiu1999/repo-doctor/action@main
+  with:
+    strict: true  # fail the build if issues are found
+```
+
+The action posts the full report to the GitHub Actions summary and exports `score` and `grade` as outputs:
+
+```yaml
+- name: Repo Doctor
+  id: doctor
+  uses: JasperLiu1999/repo-doctor/action@main
+
+- name: Check score
+  run: echo "Score is ${{ steps.doctor.outputs.score }}"
+```
+
+### Action inputs
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `path` | `.` | Path to scan |
+| `strict` | `false` | Fail if warnings/errors found |
+| `skip` | | Comma-separated rule IDs to skip |
+| `only` | | Comma-separated rule IDs to run |
+| `format` | `both` | Report format |
 
 ## Development
 

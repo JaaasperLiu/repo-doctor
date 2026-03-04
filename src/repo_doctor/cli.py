@@ -11,6 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
+from .config import load_config, merge_config
 from .context import build_context
 from .engine import RuleEngine
 from .fixer import apply_changes, preview_changes
@@ -35,6 +36,19 @@ def _severity_style(severity: Severity) -> str:
     return {
         "error": "red", "warn": "yellow", "info": "dim",
     }.get(severity.value, "white")
+
+
+def _resolve_output_dir(
+    repo_path: Path, output_dir: str | None,
+) -> Path:
+    """Resolve output directory for reports."""
+    if output_dir:
+        out = Path(output_dir)
+        if not out.is_absolute():
+            out = repo_path / out
+        out.mkdir(parents=True, exist_ok=True)
+        return out
+    return repo_path
 
 
 def _print_scan_summary(report) -> None:  # noqa: ANN001
@@ -94,31 +108,50 @@ def scan(
         bool, typer.Option("--strict", help="Treat warnings as errors")
     ] = False,
     only: Annotated[
-        Optional[list[str]], typer.Option("--only", help="Only run these rules")
+        Optional[list[str]],
+        typer.Option("--only", help="Only run these rules"),
     ] = None,
     skip: Annotated[
-        Optional[list[str]], typer.Option("--skip", help="Skip these rules")
+        Optional[list[str]],
+        typer.Option("--skip", help="Skip these rules"),
+    ] = None,
+    output_dir: Annotated[
+        Optional[str],
+        typer.Option(
+            "--output-dir", "-o", help="Output directory for reports",
+        ),
     ] = None,
 ) -> None:
     """Scan a repository and produce a health report."""
     repo_path = path.resolve()
     if not repo_path.is_dir():
-        console.print(f"[red]Error: {repo_path} is not a directory[/red]")
+        console.print(
+            f"[red]Error: {repo_path} is not a directory[/red]"
+        )
         raise typer.Exit(1)
 
+    # Load config, merge with CLI flags
+    cfg = merge_config(
+        load_config(repo_path),
+        only=only, skip=skip, format=format,
+        strict=strict, output_dir=output_dir,
+    )
+
     ctx = build_context(repo_path)
-    engine = RuleEngine(only=only, skip=skip)
+    engine = RuleEngine(only=cfg["only"], skip=cfg["skip"])
     report = engine.scan(ctx)
 
     _print_scan_summary(report)
 
-    written = write_reports(report, repo_path, fmt=format)
+    out = _resolve_output_dir(repo_path, cfg["output_dir"])
+    written = write_reports(report, out, fmt=cfg["format"])
     for p in written:
         console.print(f"[dim]Report written: {p}[/dim]")
 
-    if strict:
+    if cfg["strict"]:
         has_warnings = any(
-            not r.passed and r.severity in (Severity.WARN, Severity.ERROR)
+            not r.passed
+            and r.severity in (Severity.WARN, Severity.ERROR)
             for r in report.results
         )
         if has_warnings:
@@ -131,39 +164,61 @@ def fix(
         Path, typer.Argument(help="Path to the repository")
     ] = Path("."),
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Show changes without applying")
+        bool,
+        typer.Option("--dry-run", help="Show changes without applying"),
     ] = False,
     yes: Annotated[
-        bool, typer.Option("--yes", "-y", help="Apply without confirmation")
+        bool,
+        typer.Option("--yes", "-y", help="Apply without confirmation"),
     ] = False,
     license: Annotated[
-        str, typer.Option("--license", help="License: mit or apache-2.0")
+        str,
+        typer.Option("--license", help="License: mit or apache-2.0"),
     ] = "mit",
     ci: Annotated[
         str, typer.Option("--ci", help="CI platform: github-actions")
     ] = "github-actions",
     readme: Annotated[
-        str, typer.Option("--readme", help="README style: minimal or standard")
+        str,
+        typer.Option("--readme", help="README style: minimal or standard"),
     ] = "standard",
     format: Annotated[
         str, typer.Option("--format", "-f", help="Report format")
     ] = "both",
     only: Annotated[
-        Optional[list[str]], typer.Option("--only", help="Only run these rules")
+        Optional[list[str]],
+        typer.Option("--only", help="Only run these rules"),
     ] = None,
     skip: Annotated[
-        Optional[list[str]], typer.Option("--skip", help="Skip these rules")
+        Optional[list[str]],
+        typer.Option("--skip", help="Skip these rules"),
+    ] = None,
+    output_dir: Annotated[
+        Optional[str],
+        typer.Option(
+            "--output-dir", "-o", help="Output directory for reports",
+        ),
     ] = None,
 ) -> None:
     """Fix repository issues by generating missing files."""
     repo_path = path.resolve()
     if not repo_path.is_dir():
-        console.print(f"[red]Error: {repo_path} is not a directory[/red]")
+        console.print(
+            f"[red]Error: {repo_path} is not a directory[/red]"
+        )
         raise typer.Exit(1)
+
+    # Load config, merge with CLI flags
+    cfg = merge_config(
+        load_config(repo_path),
+        only=only, skip=skip, format=format,
+        license=license, ci=ci, readme=readme,
+        output_dir=output_dir,
+    )
 
     # Initial scan
     ctx = build_context(repo_path)
-    engine = RuleEngine(only=only, skip=skip)
+    engine = RuleEngine(only=cfg["only"], skip=cfg["skip"])
     report = engine.scan(ctx)
 
     console.print("[bold]Initial scan:[/bold]")
@@ -172,15 +227,20 @@ def fix(
     # Build change plan
     plan = engine.build_change_plan(ctx, report)
     if not plan.changes:
-        console.print("[green]Nothing to fix! Repository looks good.[/green]")
+        console.print(
+            "[green]Nothing to fix! Repository looks good.[/green]"
+        )
         return
 
     # Preview
     preview_changes(plan, console)
 
     if dry_run:
-        console.print("[yellow]Dry run - no files were modified.[/yellow]")
-        write_changes(plan, repo_path)
+        console.print(
+            "[yellow]Dry run - no files were modified.[/yellow]"
+        )
+        out = _resolve_output_dir(repo_path, cfg["output_dir"])
+        write_changes(plan, out)
         return
 
     # Confirm
@@ -208,8 +268,9 @@ def fix(
         )
 
     # Write reports
-    write_reports(report_after, repo_path, fmt=format)
-    write_changes(plan, repo_path, applied=applied)
+    out = _resolve_output_dir(repo_path, cfg["output_dir"])
+    write_reports(report_after, out, fmt=cfg["format"])
+    write_changes(plan, out, applied=applied)
 
 
 @app.command()
@@ -230,13 +291,17 @@ def init(
         if not overwrite:
             return
 
-    project_name = typer.prompt("Project name", default=repo_path.name)
-    license_choice = typer.prompt("License (mit/apache-2.0)", default="mit")
+    project_name = typer.prompt(
+        "Project name", default=repo_path.name,
+    )
+    license_choice = typer.prompt(
+        "License (mit/apache-2.0)", default="mit",
+    )
     ci_choice = typer.prompt(
-        "CI platform (github-actions)", default="github-actions"
+        "CI platform (github-actions)", default="github-actions",
     )
     readme_style = typer.prompt(
-        "README style (minimal/standard)", default="standard"
+        "README style (minimal/standard)", default="standard",
     )
 
     config = f"""# Repo Doctor configuration
@@ -244,6 +309,9 @@ project_name: {project_name}
 license: {license_choice}
 ci: {ci_choice}
 readme: {readme_style}
+
+# Output directory for reports (default: repo root)
+# output_dir: .repo-doctor
 
 # Uncomment to skip specific rules:
 # skip:

@@ -1,0 +1,90 @@
+name: "Repo Doctor"
+description: "Scan your repository for open-source readiness and post a health score."
+author: "JasperLiu1999"
+
+branding:
+  icon: "heart"
+  color: "green"
+
+inputs:
+  path:
+    description: "Path to the repository to scan"
+    required: false
+    default: "."
+  strict:
+    description: "Fail if any warnings or errors are found"
+    required: false
+    default: "false"
+  skip:
+    description: "Comma-separated list of rule IDs to skip"
+    required: false
+    default: ""
+  only:
+    description: "Comma-separated list of rule IDs to run"
+    required: false
+    default: ""
+  format:
+    description: "Report format: md, json, or both"
+    required: false
+    default: "both"
+
+outputs:
+  score:
+    description: "Repo health score (0-100)"
+    value: ${{ steps.scan.outputs.score }}
+  grade:
+    description: "Repo grade (A/B/C/D)"
+    value: ${{ steps.scan.outputs.grade }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+
+    - name: Install repo-doctor
+      shell: bash
+      run: uv tool install git+https://github.com/JasperLiu1999/repo-doctor.git
+
+    - name: Run scan
+      id: scan
+      shell: bash
+      run: |
+        ARGS="${{ inputs.path }} --format ${{ inputs.format }}"
+
+        if [ "${{ inputs.strict }}" = "true" ]; then
+          ARGS="$ARGS --strict"
+        fi
+
+        if [ -n "${{ inputs.skip }}" ]; then
+          IFS=',' read -ra RULES <<< "${{ inputs.skip }}"
+          for rule in "${RULES[@]}"; do
+            ARGS="$ARGS --skip $(echo $rule | xargs)"
+          done
+        fi
+
+        if [ -n "${{ inputs.only }}" ]; then
+          IFS=',' read -ra RULES <<< "${{ inputs.only }}"
+          for rule in "${RULES[@]}"; do
+            ARGS="$ARGS --only $(echo $rule | xargs)"
+          done
+        fi
+
+        repo-doctor scan $ARGS
+
+        # Extract score and grade from JSON report
+        REPORT="${{ inputs.path }}/repo-doctor.report.json"
+        if [ -f "$REPORT" ]; then
+          SCORE=$(python3 -c "import json; print(json.load(open('$REPORT'))['score'])")
+          GRADE=$(python3 -c "import json; print(json.load(open('$REPORT'))['grade'])")
+          echo "score=$SCORE" >> $GITHUB_OUTPUT
+          echo "grade=$GRADE" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Post summary
+      shell: bash
+      run: |
+        REPORT="${{ inputs.path }}/repo-doctor.report.md"
+        if [ -f "$REPORT" ]; then
+          cat "$REPORT" >> $GITHUB_STEP_SUMMARY
+        fi
